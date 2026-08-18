@@ -1,0 +1,9 @@
+@"
+.env
+data/
+__pycache__/
+*.db
+venv/
+logs/
+temp/
+"@ | Set-Content .gitignore
