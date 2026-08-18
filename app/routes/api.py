@@ -2,13 +2,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from app.config import BRIDGE_API_KEY, ML_CLIENT_ID
 from app.services.mercado_livre import get_auth_url, exchange_code_for_token, get_user_id
-from app.database import save_token, get_token, get_new_orders, ack_orders, get_all_orders
+from app.database import save_token, get_new_orders, ack_orders, get_all_orders
 import json
+import httpx
 
 router = APIRouter()
 
 def check_key(x_bridge_key: str = Header(None), authorization: str = Header(None)):
-    key = x_bridge_key or (authorization.replace("Bearer ","") if authorization else "")
+    key = x_bridge_key or (authorization.replace("Bearer ", "") if authorization else "")
     if key != BRIDGE_API_KEY:
         raise HTTPException(status_code=401, detail="BRIDGE_API_KEY invalida")
     return True
@@ -16,7 +17,7 @@ def check_key(x_bridge_key: str = Header(None), authorization: str = Header(None
 @router.get("/oauth/start")
 def oauth_start():
     if not ML_CLIENT_ID:
-        return JSONResponse({"erro":"ML_CLIENT_ID não configurado no Render"}, status_code=500)
+        return JSONResponse({"erro": "ML_CLIENT_ID não configurado no Render"}, status_code=500)
     return RedirectResponse(get_auth_url())
 
 @router.get("/oauth/callback")
@@ -24,12 +25,23 @@ async def oauth_callback(code: str = None, error: str = None):
     if error:
         return JSONResponse({"erro": error}, status_code=400)
     if not code:
-        return JSONResponse({"erro":"code não veio"}, status_code=400)
+        return JSONResponse({"erro": "code não veio na URL"}, status_code=400)
     try:
         token_data = await exchange_code_for_token(code)
         user_id = await get_user_id(token_data["access_token"])
         save_token(token_data["access_token"], token_data["refresh_token"], token_data["expires_in"], user_id)
         return JSONResponse({"ok": True, "user_id": user_id, "msg": "Conectado com sucesso! Pode fechar esta janela."})
+    except httpx.HTTPStatusError as e:
+        # Aqui vai aparecer o erro REAL do Mercado Livre: invalid_grant, redirect_uri_mismatch, etc
+        try:
+            detalhe = e.response.json()
+        except:
+            detalhe = e.response.text
+        return JSONResponse({
+            "erro": f"Mercado Livre retornou {e.response.status_code}",
+            "detalhe": detalhe,
+            "dica": "Se for invalid_grant, o code expirou ou ja foi usado. Va em /oauth/start de novo sem dar F5 no callback. Se for redirect_uri_mismatch, o ML_REDIRECT_URI no Render nao e identico ao cadastrado no dev panel."
+        }, status_code=500)
     except Exception as e:
         return JSONResponse({"erro": str(e)}, status_code=500)
 
@@ -37,13 +49,8 @@ async def oauth_callback(code: str = None, error: str = None):
 def api_new_orders(x_bridge_key: str = Header(None), authorization: str = Header(None)):
     check_key(x_bridge_key, authorization)
     orders = get_new_orders()
-    # formata para o monitor local
     result = []
     for o in orders:
-        try:
-            raw = json.loads(o['raw_json']) if isinstance(o['raw_json'], str) else o['raw_json']
-        except:
-            raw = {}
         result.append({
             "order_id": o['order_id'],
             "title": o['title'],
@@ -70,10 +77,9 @@ def api_all(x_bridge_key: str = Header(None), authorization: str = Header(None))
 
 @router.post("/webhooks/mercadolibre")
 async def webhook_ml(request: Request):
-    # Mercado Livre pode mandar notificacao aqui - por enquanto só loga e o poller pega
     try:
         data = await request.json()
-        print(f"[WEBHOOK] {data}")
-    except:
-        pass
+        print(f"[WEBHOOK ML] {data}")
+    except Exception as e:
+        print(f"[WEBHOOK ML] erro parse: {e}")
     return {"ok": True}
