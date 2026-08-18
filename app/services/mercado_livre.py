@@ -1,13 +1,11 @@
 import httpx, secrets, hashlib, base64
 from urllib.parse import urlencode
 from app.config import ML_CLIENT_ID, ML_CLIENT_SECRET, ML_REDIRECT_URI
+from app.database import save_pkce, get_pkce
 
 AUTH_URL="https://auth.mercadolivre.com.br/authorization"
 TOKEN_URL="https://api.mercadolibre.com/oauth/token"
 API_BASE="https://api.mercadolibre.com"
-
-# Guarda temporaria do PKCE: state -> code_verifier
-pkce_store = {}
 
 def generate_code_verifier():
     return secrets.token_urlsafe(64)[:128]
@@ -20,8 +18,7 @@ def get_auth_url_with_pkce():
     verifier = generate_code_verifier()
     challenge = generate_code_challenge(verifier)
     state = secrets.token_urlsafe(16)
-    pkce_store[state] = verifier
-
+    save_pkce(state, verifier)
     params = {
         "response_type": "code",
         "client_id": ML_CLIENT_ID,
@@ -30,24 +27,10 @@ def get_auth_url_with_pkce():
         "code_challenge_method": "S256",
         "state": state
     }
-    url = f"{AUTH_URL}?{urlencode(params)}"
-    return url, state
-
-def get_auth_url(): # fallback antigo
-    url, _ = get_auth_url_with_pkce()
-    return url
+    return f"{AUTH_URL}?{urlencode(params)}", state
 
 async def exchange_code_for_token(code: str, state: str = None):
-    # pega o verifier salvo pelo state
-    verifier = None
-    if state and state in pkce_store:
-        verifier = pkce_store.pop(state)
-    else:
-        # tenta pegar o ultimo se state nao veio (compatibilidade)
-        if pkce_store:
-            verifier = list(pkce_store.values())[-1]
-            pkce_store.clear()
-
+    verifier = get_pkce(state) if state else None
     async with httpx.AsyncClient() as client:
         data = {
             "grant_type": "authorization_code",
@@ -58,9 +41,8 @@ async def exchange_code_for_token(code: str, state: str = None):
         }
         if verifier:
             data["code_verifier"] = verifier
-
         r = await client.post(TOKEN_URL, data=data, headers={"Accept":"application/json"})
-        print(f"[TOKEN EXCHANGE] status={r.status_code} body={r.text}")
+        print(f"[TOKEN] status={r.status_code} body={r.text} verifier_exists={bool(verifier)}")
         r.raise_for_status()
         return r.json()
 
