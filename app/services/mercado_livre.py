@@ -7,6 +7,25 @@ AUTH_URL="https://auth.mercadolivre.com.br/authorization"
 TOKEN_URL="https://api.mercadolibre.com/oauth/token"
 API_BASE="https://api.mercadolibre.com"
 
+def get_auth_url_with_pkce():
+    verifier = generate_code_verifier()
+    challenge = generate_code_challenge(verifier)
+    state = secrets.token_urlsafe(16)
+    save_pkce(state, verifier)
+    params = {
+        "response_type": "code",
+        "client_id": ML_CLIENT_ID,
+        "redirect_uri": ML_REDIRECT_URI,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state
+    }
+    return f"{AUTH_URL}?{urlencode(params)}", state
+
+def get_auth_url():
+    url, _ = get_auth_url_with_pkce()
+    return url
+
 def generate_code_verifier():
     return secrets.token_urlsafe(64)[:128]
 
